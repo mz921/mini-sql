@@ -1,6 +1,6 @@
 ## Mini Sql
 
-a mini sql interpreter written by JS. Purely hand written and No dependence.
+a mini sql parser written by JS. Purely hand written and No dependence.
 
 So far it just add little and simplified sql grammer.
 
