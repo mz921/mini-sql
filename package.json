@@ -1,0 +1,22 @@
+{
+  "name": "sql-interpreter",
+  "version": "1.0.0",
+  "description": "a mini sql interpreter written by JS. Purely hand written and No dependence.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanyoulc/mini-sql.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/wanyoulc/mini-sql/issues"
+  },
+  "homepage": "https://github.com/wanyoulc/mini-sql#readme",
+  "dependencies": {
+    "parser_combinator_lib": "^1.0.0"
+  }
+}

@@ -23,7 +23,7 @@ const {
     strictStr,
     sequenceSepBy,
     suggestions
-} = require("./lib");
+} = require("parser_combinator_lib");
 
 const space = regexParserFactory(/^\s*/, "space");
 
@@ -39,7 +39,8 @@ const ifNotExists = regexParserFactory(/^(if\s+not\s+exists)|/i, "if not exists"
 
 const dataType = regexParserFactory(/^(int)|^(char)/i, "dataType");
 
-const typeName = dataType.chain(result => {
+const typeName = dataType.chain(state => {
+    const result = state.result
     if (/int/i.test(result)) {
         return succeed(result);
     }
@@ -107,16 +108,21 @@ const useTbStmtParser = sequenceSepBySpace([
 // console.log(
 //     JSON.stringify(
 //         sqlStmtListParser.run(
-//             "CREATE TABLE i not exists Persons ( PersonID int, LastName char(255), FirstName char(255), Address char(255), City char(255) );"
+//             "CREATE TABLE if not exists Persons ( PersonID int, LastName char(255), FirstName char(255), Address char(255), City char(255) );"
 //         ),
 //         null,
 //         "\t"
 //     )
 // );
-const lastMatchedToken = sqlStmtListParser.run("use database").lastMatchedToken;
+// const lastMatchedToken = sqlStmtListParser.run("use database").lastMatchedToken;
 
-console.log(lastMatchedToken);
+// console.log(lastMatchedToken);
 
-for (val of suggestions[lastMatchedToken].values()) {
-    console.log(val);
-}
+// for (val of suggestions[lastMatchedToken].values()) {
+//     console.log(val);
+// }
+
+ console.log(sqlStmtListParser.run(
+    "CREATE TABLE if not exists Persons ( PersonID int, LastName char(255), FirstName char(255), Address char(255), City char(255) );"
+))
+
