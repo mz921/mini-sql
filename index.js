@@ -1,304 +1,209 @@
-const {
-    Parser,
-    updateParserState,
-    updateParserResult,
-    updateParserError,
-    regexParserFactory,
-    letters,
-    digits,
-    str,
-    sequenceOf,
-    choice,
-    many,
-    manyOne,
-    between,
-    sepBy,
-    sepByOne,
-    succeed,
-    lazy,
-    contextual,
-    oneOrZero,
-    caseStr,
-    strictCaseStr,
-    strictStr,
-    sequenceSepBy,
-    suggestions,
-    eat
-} = require("../parser-combinators/index");
+const sqlParser = require("./ast");
+const fs = require("fs");
+const path = require("path");
+const readline = require("readline");
+const { datatypeChecker, dataSelector} = require("./helper")
 
-const {
-    ListStatementNode,
-    SelectStatementNode,
-    CreateStatementNode,
-    UseStatementNode,
-    InsertStatementNode,
-    UpdateStatementNode,
-    DeleteStatementNode,
-    Identifier,
-    DefinitionNode,
-    IntDataTypeNode,
-    CharDataTypeNode,
-    AssignmentNode,
-    OpExpressNode,
-    literalNodeFactory,
-    dropStmtNodeFactory
-} = require("./element");
+const testSql =
+    "select LastName from Persons where PersonID = 1234;";
 
-const space = regexParserFactory(/^\s*/, "space");
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
 
-// 注意当sequenceSepBy序列里有可选的parser时，也会占用一个sep，可能会造成sep解析失败
+let currentDB = "";
 
-const sequenceSepBySpace = sequenceSepBy(space);
-
-const spaceOne = regexParserFactory(/^\s+/, "spaceOne");
-
-const withSpace = parser => sequenceOf([space, parser, space]).map(res => res[1]);
-
-const comma = str(",");
-
-const commaSpace = withSpace(comma);
-
-const sepByComma = sepByOne(commaSpace);
-
-const digitsSpace = withSpace(digits);
-
-const brackets = between(str("("), str(")"));
-
-const identifier = regexParserFactory(/^[a-zA-Z_][a-zA-Z_0-9]*/, "identifier");
-
-const ifNotExists = regexParserFactory(/^(if\s+not\s+exists)|/i, "if not exists").map(res =>
-    res ? true : false
-);
-
-const dataType = regexParserFactory(/^(int)|^(char)/i, "dataType");
-
-const typeName = dataType.chain(state => {
-    const result = state.result;
-    if (/int/i.test(result)) {
-        return succeed(result).map(_ => new IntDataTypeNode());
+const useDatabaseChecker = (variant, handler) => {
+    if (variant === "use" || variant === "create" || variant === "list") {
+        return handler;
+    } else {
+        return (...args) => {
+            if (currentDB === "") {
+                console.log("database has not been used yet");
+                return;
+            }
+            handler(...args);
+        };
     }
-    if (/char/i.test(result)) {
-        return brackets(digitsSpace).map(args => new CharDataTypeNode(args[1]));
+};
+
+const listHandler = (listNode, astIterator) => {
+    listNode.statements.forEach(statement => {
+        astIterator(statement);
+    });
+};
+
+const createHandler = (createNode, astIterator) => {
+    if (createNode.format === "database") {
+        const name = astIterator(createNode.name);
+        createDB(name);
+    } else if (createNode.format === "table") {
+        const name = astIterator(createNode.name);
+        const definitions = createNode.definitions.map(def => astIterator(def)).reduce((prev, curr) => {
+            prev[curr.name] = {...curr}
+            delete prev[curr.name]['name']
+            return prev
+        }, {});
+        const conditions = createNode.conditions;
+        createTable(name, definitions, conditions);
     }
-});
+};
 
-const columnDef = withSpace(sequenceOf([identifier, spaceOne, typeName])).map(
-    res => new DefinitionNode("column", res[0], res[2])
-);
-// column_name1 data_type(size),column_name2 data_type(size),column_name3 data_type(size), .... )
-const columnDefs = brackets(sepByComma(columnDef));
-// (column_name1,column_name2,...)
-const columns = brackets(sepByComma(identifier));
-// (value1,value2,...)
-const values = brackets(sepByComma(regexParserFactory(/^[^,)]+/)));
-
-const assignment = sequenceSepBySpace([
-    identifier,
-    str("="),
-    regexParserFactory(/(^\d+)|(^'.*?')|(^".*?")/)
-]).map(result => {
-    const target = new Identifier("column", result[0]);
-    const value = literalNodeFactory(result[2]);
-    return new AssignmentNode(target, value);
-});
-
-const assignments = sepByComma(assignment);
-
-const star = str("*");
-
-const op = choice([str("="), str(">"), str("<")]);
-
-const quote = regexParserFactory(/['"]/);
-
-const literal = choice([digits, between(quote, quote)(regexParserFactory(/^[^'"]+/))]);
-
-const sqlStmtListParser = lazy(() =>
-    manyOne(sequenceOf([withSpace(sqlStmtParser), str(";")])).map(results => {
-        const newResults = results.map(v => v[0]);
-        return new ListStatementNode(newResults);
-    })
-);
-
-const sqlStmtParser = lazy(() =>
-    choice([
-        createDBStmtParser,
-        createTbStmtParser,
-        useTbStmtParser,
-        selectStmtParser,
-        insertStmtParser,
-        updateStmtParser,
-        deleteStmtParser,
-        dropStmtParser,
-        exitParser
-    ])
-);
-
-const createDBStmtParser = sequenceSepBySpace([
-    caseStr("create"),
-    caseStr("database"),
-    identifier
-]).map(result => {
-    const name = new Identifier("database", result[2]);
-    return new CreateStatementNode("database", name);
-});
-
-const createTbStmtParser = sequenceSepBySpace([
-    caseStr("create"),
-    caseStr("table"),
-    ifNotExists,
-    identifier,
-    columnDefs
-]).map(result => {
-    const name = new Identifier("table", result[3]);
-    return new CreateStatementNode("table", name, result[4], result[2]);
-});
-
-const useTbStmtParser = sequenceSepBySpace([caseStr("use"), caseStr("database"), identifier]).map(
-    result => {
-        const name = new Identifier("database", result[2]);
-        return new UseStatementNode(name);
+const createDB = name => {
+    const dbPath = path.resolve(__dirname, `${name}.json`);
+    const dbMetaPath = path.resolve(__dirname, `${name}.meta.json`);
+    if (fs.existsSync(dbPath) || fs.existsSync(dbMetaPath)) {
+        console.log("database has existed. It will be overwrited in dev env");
     }
-);
+    fs.closeSync(fs.openSync(dbMetaPath, "w"));
+    fs.closeSync(fs.openSync(dbPath, "w"));
+    console.log(`database ${name} has been created successfully`);
+};
 
-const whereClauseParser = sequenceSepBySpace([caseStr("where"), identifier, op, literal]).map(
-    result => {
-        const left = new Identifier("column", result[1]);
-        const op = result[2];
-        const right = literalNodeFactory(result[3]);
-        return new OpExpressNode(op, left, right);
+const createTable = (name, definitions, conditions) => {
+    if (currentDB === "") {
+        console.log("database has not been used yet");
+        return;
     }
-);
-
-const selectStmtParser = sequenceSepBySpace([
-    caseStr("select"),
-    choice([star, sepByComma(identifier)]),
-    caseStr("from"),
-    identifier,
-    oneOrZero(whereClauseParser)
-]).map(result => {
-    const selectResults = result[1];
-    const selectFrom = result[3];
-    const selectWhere = result[4];
-    return new SelectStatementNode(selectResults, selectFrom, selectWhere);
-});
-
-const insertStmtParser = sequenceSepBySpace([
-    caseStr("insert"),
-    caseStr("into"),
-    identifier,
-    oneOrZero(columns),
-    caseStr("values"),
-    values
-]).map(result => {
-    const table = new Identifier("table", result[2]);
-    const columns = result[3];
-    let columnIdentifiers;
-    if (columns) {
-        columnIdentifiers = [];
-        for (let column of columns) {
-            columnIdentifiers.push(new Identifier("column", column));
+    const dbPath = path.resolve(__dirname, `${currentDB}.meta.json`);
+    try {
+        const db = fs.readFileSync(dbPath, "utf8");
+        const dbObj = (db && JSON.parse(db)) || {};
+        if (conditions && db[name]) {
+            console.log("table has existed");
+            return;
         }
+        dbObj[name] = {
+            definitions
+        };
+        fs.writeFileSync(dbPath, JSON.stringify(dbObj));
+    } catch (e) {
+        console.log(e);
     }
-    const values = result[5];
-    const valueIdentifiers = [];
-    for (let value of values) {
-        valueIdentifiers.push(literalNodeFactory(value));
+};
+
+const useHandler = (node, astIterator) => {
+    currentDB = astIterator(node.name);
+};
+
+const selectHandler = (node, astIterator) => {
+    const dbDataPath = path.resolve(__dirname, `${currentDB}.json`)
+    const result = node.result
+    const selectedTable = node.from
+    const filter = astIterator(node.where)
+    try {
+        const dbData = fs.readFileSync(dbDataPath, "utf8");
+        if(dbData) {
+            const dbDataObj = JSON.parse(dbData)
+            console.log(dataSelector(dbDataObj[selectedTable], filter, result))
+        }
+    } catch (e) {
+        console.log(e);
     }
-    return new InsertStatementNode(table, columnIdentifiers, valueIdentifiers);
-});
+};
 
-const updateStmtParser = sequenceSepBySpace([
-    caseStr("update"),
-    identifier,
-    caseStr("set"),
-    assignments,
-    oneOrZero(whereClauseParser)
-]).map(result => {
-    console.log(result);
-    const table = result[1];
-    const assignments = result[3];
-    const where = result[4];
-    return new UpdateStatementNode(table, assignments, where);
-});
+const insertHandler = (node, astIterator) => {
+    const dbPath = path.resolve(__dirname, `${currentDB}.meta.json`);
+    const dbDataPath = path.resolve(__dirname, `${currentDB}.json`)
+    const intoTable = astIterator(node.intoTable)
 
-const deleteStmtParser = sequenceSepBySpace([
-    caseStr("delete"),
-    caseStr("from"),
-    identifier,
-    oneOrZero(whereClauseParser)
-]).map(result => {
-    const from = result[2];
-    const where = result[3];
-    return new DeleteStatementNode(from, where);
-});
+    try {
+        const db = fs.readFileSync(dbPath, "utf8");
+        const dbObj = (db && JSON.parse(db)) || {};
+        const table = dbObj[intoTable]
+        if (!table){
+            console.log("Table has been not created yet")
+            return
+        }
+        const definitions = table.definitions
+        // assume intoColumns length === results length
+        const insertData = node.intoColumns.reduce((prev, cur, index) => {
+            prev[cur.name] = node.results[index].value
+            return prev
+        }, {})
+        
+        Object.keys(insertData).forEach(dataName => {
+            if(!datatypeChecker(definitions[dataName], insertData[dataName])){
+                console.log(definitions[data.name], data.value)
+                throw new Error('datatype does not matched')
+            }
+        })
 
-const dropStmtParser = sequenceSepBySpace([
-    caseStr("drop"),
-    regexParserFactory(/^table|^database/i),
-    identifier
-]).map(result => dropStmtNodeFactory(result[1], result[2]));
+        // need to be optimized: can use stream
+        const dbData = fs.readFileSync(dbDataPath, "utf8")
+        const dbDataObj = dbData && JSON.parse(dbData) || {}
 
-const exitParser = caseStr("exit");
+        dbDataObj[intoTable] ? 
+        dbDataObj[intoTable].push(insertData) :
+        dbDataObj[intoTable] = [insertData]
 
-// console.log(
-//     JSON.stringify(
-//         sqlStmtListParser.run(
-//             "CREATE database test;"
-//         ),
-//         null,
-//         "\t"
-//     )
-// );
+        fs.writeFileSync(dbDataPath, JSON.stringify(dbDataObj));
 
-// console.log(
-//     JSON.stringify(
-//         sqlStmtListParser.run(
-//             "CREATE TABLE if not exists Persons ( PersonID int, LastName char(255), FirstName char(255), Address char(255), City char(255) );"
-//         ),
-//         null,
-//         "\t"
-//     )
-// );
 
-// console.log(
-//     JSON.stringify(sqlStmtListParser.run("select foo from Foo where foo = 11;"), null, "\t")
-// );
+    }catch(e) {
+        console.log(e)
+    }
+    
+};
 
-// console.log(
-//     JSON.stringify(
-//         sqlStmtListParser.run(
-//             "INSERT INTO Customers (CustomerName, ContactName, Address, City, PostalCode, Country) VALUES ('Cardinal',21 ,'Skagen 21','Stavanger','4006','Norway'); "
-//         ),
-//         null,
-//         "\t"
-//     )
-// );
+const nodeHandlers = {
+    list: listHandler,
+    create: createHandler,
+    use: useHandler,
+    select: selectHandler,
+    insert: insertHandler
+};
 
-// console.log(
-//     JSON.stringify(
-//         sqlStmtListParser.run(
-//             "UPDATE Customers SET ContactName='Alfred Schmidt', City='Hamburg' WHERE CustomerName='Alfreds Futterkiste'; "
-//         ),
-//         null,
-//         "\t"
-//     )
-// );
+const astIterator = node => {
+    switch (node.type) {
+        case "statement":
+            const handler = useDatabaseChecker(node.variant, nodeHandlers[node.variant]);
+            return handler(node, astIterator);
+        case "identifier":
+                return node.name;
+        case "definitionNode":
+            if (node.variant === "column") {
+                return {
+                    name: node.name,
+                    ...astIterator(node.datatype)
+                };
+            }
+        case "datatype":
+            return {
+                datatype: node.variant,
+                args: node.args
+            };
+        case "literal": 
+            return node.value
+        case "express":
+            if (node.variant === "operation"){
+                return {
+                    operation: node.operation,
+                    key: astIterator(node.left),
+                    value: astIterator(node.right)
+                }
+            }
+    }
+}
 
-console.log(
-    JSON.stringify(
-        sqlStmtListParser.run(" DELETE FROM table_name WHERE some_column='some_value';"),
-        null,
-        "\t"
-    )
-);
-// const lastMatchedToken = sqlStmtListParser.run("use database").lastMatchedToken;
+function main() {
+    rl.on("line", sql => {
+        try {
+            const res = sqlParser.run(sql);
+            if (!res.isError) {
+                const root = res.result;
+                astIterator(root);
+            } else {
+                console.log("parsing error");
+                console.log(res);
+            }
+        } catch (e) {
+            console.log("unknown error");
+            console.log(e);
+        }
+    });
+}
 
-// console.log(lastMatchedToken);
-
-// for (val of suggestions[lastMatchedToken].values()) {
-//     console.log(val);
-// }
-
-// sqlStmtListParser.run(
-//     "CREATE TABLE if not exists Persons ( PersonID int, LastName char(255), FirstName char(255), Address char(255), City char(255) );"
-// )
+// console.log(JSON.stringify(sqlParser.run(testSql), null, "\t"));
+main()

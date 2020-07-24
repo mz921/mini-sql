@@ -1,0 +1,11 @@
+{
+    "Persons": {
+        "definitions": {
+            "PersonID": { "datatype": "int" },
+            "LastName": { "datatype": "char", "args": "5" },
+            "FirstName": { "datatype": "char", "args": "5" },
+            "Address": { "datatype": "char", "args": "5" },
+            "City": { "datatype": "char", "args": "5" }
+        }
+    }
+}

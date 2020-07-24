@@ -23,18 +23,19 @@ class SelectStatementNode extends StatementNode{
 }
 
 class CreateStatementNode extends StatementNode{
-    constructor(format, name, definations, conditions) {
+    constructor(format, name, definitions, conditions) {
         super()
         this.variant = "create"
         this.format = format
         this.name = name
-        this.definations = definations
+        this.definitions = definitions
         this.conditions = conditions
     }
 }
 
 class UseStatementNode extends StatementNode{
     constructor(name) {
+        super()
         this.variant = "use"
         this.name = name
     }
